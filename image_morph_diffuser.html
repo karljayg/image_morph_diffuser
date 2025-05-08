@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image Particle Cloud Visualizer</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background-color: #111; color: #fff; overflow: hidden; }
+    #container { width: 100vw; height: 100vh; }
+    #controls {
+      position: absolute; top: 10px; left: 10px;
+      background: rgba(0,0,0,0.75); padding: 15px; border-radius: 8px;
+      z-index: 100; max-height: 90vh; overflow-y: auto;
+      box-shadow: 0 0 15px rgba(0,0,0,0.5);
+    }
+    #controls label, #controls button, #controls input { display: block; margin-bottom: 10px; color: #eee; }
+    #controls input[type="range"] { width: 170px; vertical-align: middle; }
+    #controls input[type="color"] { width: 170px; height: 25px; }
+    #controls input[type="checkbox"] { vertical-align: middle; margin-right: 5px; }
+    #controls button {
+      background-color: #007bff; color: #fff;
+      border: none; padding: 8px 12px; cursor: pointer; border-radius: 4px;
+      transition: background-color 0.2s ease;
+    }
+    #controls button:hover { background-color: #0056b3; }
+    #controls button:disabled { background-color: #555; cursor: not-allowed; }
+    #controls hr { border: 0; height: 1px; background: #444; margin: 15px 0; }
+    #loading {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 1.5em; background: rgba(0,0,0,0.85);
+      padding: 25px; border-radius: 8px; display: none; z-index: 200;
+      box-shadow: 0 0 15px rgba(0,0,0,0.5);
+    }
+    .control-group { margin-bottom: 15px; }
+    .control-group label { font-weight: bold; margin-bottom: 5px; }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
+  <div id="loading">Processing Image...</div>
+
+  <div id="controls">
+    <div class="control-group">
+      <label for="imageUpload">Upload Primary Image:</label>
+      <input type="file" id="imageUpload" accept="image/*">
+    </div>
+    <div class="control-group">
+      <label for="imageUpload2">Upload Second Image (for Morph):</label>
+      <input type="file" id="imageUpload2" accept="image/*">
+    </div>
+    <hr>
+    <div class="control-group">
+      <button id="btnForm">Form Image</button>
+      <button id="btnExpand">Expand Cloud</button>
+      <button id="btnDissipate">Dissipate Particles</button>
+      <button id="btnMorph">Morph to Second Image</button>
+      <button id="btnMorphBack">Morph Back to First Image</button>
+    </div>
+    <hr>
+    <div class="control-group">
+      <label for="particleSize">Particle Size: <span id="particleSizeVal">5</span></label>
+      <input type="range" id="particleSize" min="1" max="20" value="3">
+    </div>
+    <div class="control-group">
+      <label for="particleColor">Particle Color (Tint):</label>
+      <input type="color" id="particleColor" value="#ffffff">
+    </div>
+    <div class="control-group">
+      <label>
+        <input type="checkbox" id="useImageColor" checked> Use Image Colors
+      </label>
+    </div>
+    <hr>
+    <div class="control-group">
+      <label for="imageDetail">Image Detail (Max Pixels): <span id="imageDetailVal">1000</span></label>
+      <input type="range" id="imageDetail" min="50" max="300000" value="1000" step="10">
+    </div>
+    <div class="control-group">
+      <label for="particleDensity">Particle Density (Lower is denser): <span id="particleDensityVal">1</span></label>
+      <input type="range" id="particleDensity" min="1" max="20" value="1">
+    </div>
+    <hr>
+    <div class="control-group">
+      <label for="expansionFactor">Expansion Factor: <span id="expansionFactorVal">100</span></label>
+      <input type="range" id="expansionFactor" min="10" max="500" value="100">
+    </div>
+    <div class="control-group">
+      <label for="dissipationFactor">Dissipation Factor: <span id="dissipationFactorVal">500</span></label>
+      <input type="range" id="dissipationFactor" min="100" max="2000" value="500">
+    </div>
+    <div class="control-group">
+      <label for="animationSpeed">Animation Speed (ms): <span id="animationSpeedVal">1500</span></label>
+      <input type="range" id="animationSpeed" min="500" max="5000" value="1500" step="100">
+    </div>
+  </div>
+
+  <!-- Three.js, OrbitControls, Anime.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/three@latest/build/three.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/three@latest/examples/js/controls/OrbitControls.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/animejs@latest/lib/anime.min.js"></script>
+
+  <script>
+    let scene, camera, renderer, controls;
+    let particlesGroup;
+    let particleData = [], particleDataImage1 = [], particleDataImage2 = [];
+    let currentAnimation;
+    let image1Loaded = false, image2Loaded = false;
+
+    const MAX_PARTICLES_DISPLAY = 300000;
+    let PARTICLE_SKIP_STEP = 1;
+    let IMAGE_PROCESS_MAX_DIM = 1000;
+
+    const loadingElement = document.getElementById('loading');
+    const container = document.getElementById('container');
+
+    let imageUpload, imageUpload2, btnForm, btnExpand, btnDissipate, btnMorph, btnMorphBack;
+    let particleSizeSlider, particleColorPicker, useImageColorCheckbox;
+    let imageDetailSlider, particleDensitySlider;
+    let expansionFactorSlider, dissipationFactorSlider, animationSpeedSlider;
+    let particleSizeVal, imageDetailVal, particleDensityVal;
+    let expansionFactorVal, dissipationFactorVal, animationSpeedVal;
+
+    document.addEventListener('DOMContentLoaded', () => {
+      imageUpload            = document.getElementById('imageUpload');
+      imageUpload2           = document.getElementById('imageUpload2');
+      btnForm                = document.getElementById('btnForm');
+      btnExpand              = document.getElementById('btnExpand');
+      btnDissipate           = document.getElementById('btnDissipate');
+      btnMorph               = document.getElementById('btnMorph');
+      btnMorphBack           = document.getElementById('btnMorphBack');
+      particleSizeSlider     = document.getElementById('particleSize');
+      particleColorPicker    = document.getElementById('particleColor');
+      useImageColorCheckbox  = document.getElementById('useImageColor');
+      imageDetailSlider      = document.getElementById('imageDetail');
+      particleDensitySlider  = document.getElementById('particleDensity');
+      expansionFactorSlider  = document.getElementById('expansionFactor');
+      dissipationFactorSlider= document.getElementById('dissipationFactor');
+      animationSpeedSlider   = document.getElementById('animationSpeed');
+
+      particleSizeVal        = document.getElementById('particleSizeVal');
+      imageDetailVal         = document.getElementById('imageDetailVal');
+      particleDensityVal     = document.getElementById('particleDensityVal');
+      expansionFactorVal     = document.getElementById('expansionFactorVal');
+      dissipationFactorVal   = document.getElementById('dissipationFactorVal');
+      animationSpeedVal      = document.getElementById('animationSpeedVal');
+
+      init();
+      animate();
+    });
+
+    function init() {
+      // Scene & Camera
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x111111);
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+      camera.position.z = 300;
+
+      // Renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      container.appendChild(renderer.domElement);
+
+      // Controls
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.screenSpacePanning = false;
+      controls.minDistance = 10;
+      controls.maxDistance = 5000;
+
+      // Lighting
+      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+      dirLight.position.set(50, 50, 50);
+      scene.add(dirLight);
+
+      // Particles Group
+      particlesGroup = new THREE.Group();
+      scene.add(particlesGroup);
+
+      // Event Listeners
+      window.addEventListener('resize', onWindowResize);
+      imageUpload.addEventListener('change', handleImageUpload);
+      imageUpload2.addEventListener('change', handleImageUpload2);
+      btnForm.addEventListener('click',   () => animateToState('form'));
+      btnExpand.addEventListener('click', () => animateToState('expand'));
+      btnDissipate.addEventListener('click', () => animateToState('dissipate'));
+      btnMorph.addEventListener('click',  () => animateToState('morph'));
+      btnMorphBack.addEventListener('click', () => animateToState('morphBack'));
+
+      // Disable morph buttons initially
+      btnMorph.disabled     = true;
+      btnMorphBack.disabled = true;
+
+      // UI Controls
+      particleSizeSlider.oninput = e => {
+        particleSizeVal.textContent = e.target.value;
+        updateParticleAppearance();
+      };
+      particleColorPicker.oninput      = updateParticleAppearance;
+      useImageColorCheckbox.onchange   = updateParticleAppearance;
+
+      imageDetailSlider.oninput = e => {
+        imageDetailVal.textContent = e.target.value;
+        IMAGE_PROCESS_MAX_DIM = parseInt(e.target.value, 10);
+        if (image1Loaded) alert("Re-upload primary image to apply new detail.");
+      };
+      particleDensitySlider.oninput = e => {
+        particleDensityVal.textContent = e.target.value;
+        PARTICLE_SKIP_STEP = parseInt(e.target.value, 10);
+        if (image1Loaded) alert("Re-upload primary image to apply new density.");
+      };
+
+      expansionFactorSlider.oninput   = e => expansionFactorVal.textContent = e.target.value;
+      dissipationFactorSlider.oninput = e => dissipationFactorVal.textContent = e.target.value;
+      animationSpeedSlider.oninput    = e => animationSpeedVal.textContent = e.target.value;
+
+      // Initialize labels
+      particleSizeVal.textContent       = particleSizeSlider.value;
+      imageDetailVal.textContent        = imageDetailSlider.value;
+      particleDensityVal.textContent    = particleDensitySlider.value;
+      expansionFactorVal.textContent    = expansionFactorSlider.value;
+      dissipationFactorVal.textContent  = dissipationFactorSlider.value;
+      animationSpeedVal.textContent     = animationSpeedSlider.value;
+    }
+
+    function handleImageUpload(evt) {
+      const file = evt.target.files[0];
+      if (!file) return;
+      loadingElement.style.display = 'block';
+      clearParticles();
+      imageUpload2.value = '';
+      image2Loaded = false;
+      btnMorph.disabled = true;
+      btnMorphBack.disabled = true;
+
+      const reader = new FileReader();
+      reader.onload = e => {
+        const img = new Image();
+        img.onload = () => {
+          processImage1(img);
+          loadingElement.style.display = 'none';
+        };
+        img.onerror = () => {
+          alert("Error loading primary image.");
+          loadingElement.style.display = 'none';
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function handleImageUpload2(evt) {
+      const file = evt.target.files[0];
+      if (!file) return;
+      loadingElement.style.display = 'block';
+      particleDataImage2 = [];
+      image2Loaded = false;
+      btnMorph.disabled = true;
+      btnMorphBack.disabled = true;
+
+      const reader = new FileReader();
+      reader.onload = e => {
+        const img = new Image();
+        img.onload = () => {
+          processImage2(img);
+          loadingElement.style.display = 'none';
+        };
+        img.onerror = () => {
+          alert("Error loading second image.");
+          loadingElement.style.display = 'none';
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function extractParticleData(img) {
+      const canvas = document.createElement('canvas');
+      const ctx    = canvas.getContext('2d');
+      const aspect = img.width / img.height;
+      let newW, newH;
+
+      if (PARTICLE_SKIP_STEP === 1) {
+        newW = Math.floor(Math.sqrt(MAX_PARTICLES_DISPLAY * aspect));
+        newH = Math.floor(MAX_PARTICLES_DISPLAY / newW);
+      } else {
+        let w = img.width, h = img.height, maxD = IMAGE_PROCESS_MAX_DIM;
+        if (w > h) {
+          if (w > maxD) { w = maxD; h = w / aspect; }
+        } else {
+          if (h > maxD) { h = maxD; w = h * aspect; }
+        }
+        if (w > maxD) { w = maxD; h = w / aspect; }
+        if (h > maxD) { h = maxD; w = h * aspect; }
+        newW = Math.round(w);
+        newH = Math.round(h);
+      }
+
+      canvas.width  = Math.max(1, newW);
+      canvas.height = Math.max(1, newH);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const arr = [];
+      for (let y = 0; y < canvas.height; y += PARTICLE_SKIP_STEP) {
+        for (let x = 0; x < canvas.width; x += PARTICLE_SKIP_STEP) {
+          const idx = (y * canvas.width + x) * 4;
+          const r = data[idx]   / 255;
+          const g = data[idx+1] / 255;
+          const b = data[idx+2] / 255;
+          const a = data[idx+3] / 255;
+          if (a > 0.1) {
+            arr.push({
+              originalPosition: new THREE.Vector3(
+                x - canvas.width/2,
+                -y + canvas.height/2,
+                (Math.random()-0.5)*(canvas.width/100)
+              ),
+              originalColor: new THREE.Color(r, g, b),
+              randomOffset: new THREE.Vector3(
+                Math.random()-0.5,
+                Math.random()-0.5,
+                Math.random()-0.5
+              ).normalize()
+            });
+          }
+        }
+      }
+      if (arr.length > MAX_PARTICLES_DISPLAY) {
+        console.warn(`Too many particles (${arr.length}), truncating to ${MAX_PARTICLES_DISPLAY}.`);
+        arr.splice(MAX_PARTICLES_DISPLAY);
+      }
+      return arr;
+    }
+
+    function processImage1(img) {
+      particleData = extractParticleData(img);
+      if (!particleData.length) {
+        alert("No particles generated from primary image.");
+        return;
+      }
+      // Save a clone for “Morph Back”
+      particleDataImage1 = particleData.map(p => ({
+        originalPosition: p.originalPosition.clone(),
+        originalColor:    p.originalColor.clone(),
+        randomOffset:     p.randomOffset.clone()
+      }));
+      image1Loaded = true;
+      createParticleSystem();
+      fitCamera();
+      animateToState('form');
+    }
+
+    function processImage2(img) {
+      particleDataImage2 = extractParticleData(img);
+      if (!particleDataImage2.length) {
+        alert("No particles generated for second image.");
+        return;
+      }
+      image2Loaded = true;
+      if (image1Loaded) {
+        btnMorph.disabled = false;
+        alert("Second image processed. Ready to morph.");
+      }
+    }
+
+    function fitCamera() {
+      if (!particlesGroup.children.length) return;
+      const geo = particlesGroup.children[0].geometry;
+      const bbox = new THREE.Box3().setFromBufferAttribute(geo.attributes.position);
+      const size = new THREE.Vector3();
+      bbox.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const fov = camera.fov * (Math.PI/180);
+      const camZ = Math.abs(maxDim/2 / Math.tan(fov/2)) * 1.5;
+      camera.position.z = Math.max(camZ, 150);
+      controls.target.copy(bbox.getCenter(new THREE.Vector3()));
+      camera.userData.fitted = true;
+    }
+
+    function createParticleSystem() {
+      // Clear old
+      while (particlesGroup.children.length) {
+        const obj = particlesGroup.children[0];
+        obj.geometry.dispose();
+        obj.material.dispose();
+        particlesGroup.remove(obj);
+      }
+      const count = particleData.length;
+      const posArr = new Float32Array(count*3),
+            colArr = new Float32Array(count*3);
+      particleData.forEach((p,i) => {
+        posArr[i*3]   = p.originalPosition.x;
+        posArr[i*3+1] = p.originalPosition.y;
+        posArr[i*3+2] = p.originalPosition.z;
+        colArr[i*3]   = p.originalColor.r;
+        colArr[i*3+1] = p.originalColor.g;
+        colArr[i*3+2] = p.originalColor.b;
+      });
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+      geometry.setAttribute('color',    new THREE.BufferAttribute(colArr, 3));
+      const material = new THREE.PointsMaterial({
+        size: parseFloat(particleSizeSlider.value),
+        vertexColors: useImageColorCheckbox.checked,
+        color: useImageColorCheckbox.checked
+               ? 0xffffff
+               : new THREE.Color(particleColorPicker.value),
+        transparent: true,
+        depthWrite: false
+      });
+      const points = new THREE.Points(geometry, material);
+      particlesGroup.add(points);
+    }
+
+    function clearParticles() {
+      if (currentAnimation) currentAnimation.pause();
+      while (particlesGroup.children.length) {
+        const obj = particlesGroup.children[0];
+        obj.geometry.dispose();
+        obj.material.dispose();
+        particlesGroup.remove(obj);
+      }
+      particleData = [];
+      particleDataImage1 = [];
+      particleDataImage2 = [];
+      image1Loaded = image2Loaded = false;
+      btnMorph.disabled     = true;
+      btnMorphBack.disabled = true;
+      camera.userData.fitted = false;
+    }
+
+    function updateParticleAppearance() {
+      const pts = particlesGroup.children[0];
+      if (!pts) return;
+      pts.material.size = parseFloat(particleSizeSlider.value);
+      pts.material.vertexColors = useImageColorCheckbox.checked;
+      if (!useImageColorCheckbox.checked) {
+        pts.material.color.set(particleColorPicker.value);
+      } else {
+        pts.material.color.set(0xffffff);
+      }
+      pts.material.needsUpdate = true;
+    }
+
+    function animateToState(state) {
+      if (!particleData.length) return;
+      if (state==='morph' && !image2Loaded) {
+        alert("Upload and process a second image first.");
+        return;
+      }
+      if (state==='morphBack' && !image1Loaded) {
+        alert("No first-image data to morph back to.");
+        return;
+      }
+
+      const pts     = particlesGroup.children[0];
+      const posAttr = pts.geometry.attributes.position;
+      const colAttr = pts.geometry.attributes.color;
+      const startPositions = [];
+      const startColors    = [];
+
+      for (let i=0; i<particleData.length; i++) {
+        startPositions.push(
+          new THREE.Vector3(
+            posAttr.getX(i),
+            posAttr.getY(i),
+            posAttr.getZ(i)
+          )
+        );
+        if (useImageColorCheckbox.checked) {
+          startColors.push(
+            new THREE.Color(
+              colAttr.getX(i),
+              colAttr.getY(i),
+              colAttr.getZ(i)
+            )
+          );
+        }
+      }
+      if (currentAnimation) currentAnimation.pause();
+
+      const targets = [];
+      const targetColors = [];
+      particleData.forEach((p,i) => {
+        const tgtPos = new THREE.Vector3();
+        let   tgtCol = p.originalColor.clone();
+
+        if (state==='form') {
+          tgtPos.copy(p.originalPosition);
+        } else if (state==='expand') {
+          tgtPos.copy(p.originalPosition)
+                .addScaledVector(p.randomOffset,
+                  parseFloat(expansionFactorSlider.value)*(Math.random()*0.5+0.75)
+                );
+        } else if (state==='dissipate') {
+          tgtPos.copy(p.originalPosition)
+                .addScaledVector(p.randomOffset,
+                  parseFloat(dissipationFactorSlider.value)*(Math.random()*0.8+0.5)
+                );
+        } else if (state==='morph') {
+          const dp = particleDataImage2[i % particleDataImage2.length];
+          tgtPos.copy(dp.originalPosition);
+          tgtCol = dp.originalColor;
+        } else if (state==='morphBack') {
+          const dp = particleDataImage1[i % particleDataImage1.length];
+          tgtPos.copy(dp.originalPosition);
+          tgtCol = dp.originalColor;
+        }
+
+        targets.push(tgtPos);
+        if (useImageColorCheckbox.checked) targetColors.push(tgtCol);
+      });
+
+      let prog = { value: 0 };
+      currentAnimation = anime({
+        targets: prog, value: 1,
+        duration: parseInt(animationSpeedSlider.value,10),
+        easing: 'easeInOutQuad',
+        update: () => {
+          for (let i=0; i<particleData.length; i++) {
+            const s = startPositions[i], e = targets[i];
+            posAttr.setXYZ(i,
+              THREE.MathUtils.lerp(s.x,e.x,prog.value),
+              THREE.MathUtils.lerp(s.y,e.y,prog.value),
+              THREE.MathUtils.lerp(s.z,e.z,prog.value)
+            );
+            if (useImageColorCheckbox.checked) {
+              const sc = startColors[i], ec = targetColors[i];
+              colAttr.setXYZ(i,
+                THREE.MathUtils.lerp(sc.r,ec.r,prog.value),
+                THREE.MathUtils.lerp(sc.g,ec.g,prog.value),
+                THREE.MathUtils.lerp(sc.b,ec.b,prog.value)
+              );
+            }
+          }
+          posAttr.needsUpdate = true;
+          if (useImageColorCheckbox.checked) colAttr.needsUpdate = true;
+          if (state==='dissipate') {
+            pts.material.opacity = THREE.MathUtils.lerp(1,0,prog.value);
+          } else {
+            pts.material.opacity = 1;
+          }
+          pts.material.needsUpdate = true;
+        },
+        complete: () => {
+          if (state==='morph') {
+            // adopt second-image as new base
+            particleData.forEach((p,i) => {
+              const dp = particleDataImage2[i % particleDataImage2.length];
+              p.originalPosition.copy(dp.originalPosition);
+              p.originalColor.copy(dp.originalColor);
+            });
+            btnMorph.disabled     = true;
+            btnMorphBack.disabled = false;
+          } else if (state==='morphBack') {
+            // restore first-image base
+            particleData.forEach((p,i) => {
+              const dp = particleDataImage1[i % particleDataImage1.length];
+              p.originalPosition.copy(dp.originalPosition);
+              p.originalColor.copy(dp.originalColor);
+            });
+            btnMorph.disabled     = false;
+            btnMorphBack.disabled = true;
+          }
+          currentAnimation = null;
+        }
+      });
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
